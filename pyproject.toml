@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlnav"
+version = "0.1.0"
+description = "Hack-resistant RL navigation environment (CARLA) with verifier, LLM-agent rollouts, Harbor task and K8s job"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.40"]
+carla = ["carla>=0.9.13"]
+dev = ["pytest>=7", "mypy>=1.8"]
+
+[tool.setuptools.packages.find]
+include = ["rlnav*"]
+
+[tool.mypy]
+strict = true

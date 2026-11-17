@@ -1,89 +1,60 @@
-# RLAutoNav
-A self-driving AI system that uses a custom CNN model trained with reinforcement learning concepts to map visual input to driving actions. Designed for real-time decision-making in simulated environments, enabling end-to-end autonomous vehicle control.
+# rlnav-carla: a hack-resistant RL navigation environment
 
+A small RL environment for point-to-point driving, built on the CARLA API, designed around one question:
+**how do you stop an agent from gaming the score?**
 
-Here's a well-written `README.md` description for your self-driving AI project, including your requested improvements and highlighting the synchronization between both files:
+It has a CARLA backend for real runs and a kinematic fake backend, so tests, CI and cluster jobs need no simulator.
 
----
+```
+rlnav/
+  types.py          State / Action / Task + geometry
+  env.py            Gym-like NavEnv over any backend
+  backend_carla.py  Real CARLA 0.9.13+ backend (vehicle, collision + lane-invasion sensors, sync mode)
+  backend_fake.py   Kinematic bicycle model (used by tests/CI/K8s)
+  reward.py         Dense, potential-based training reward
+  verifier.py       Strict, independent pass/fail grader
+  agent.py          LLM agent (Anthropic API) + heuristic + random baselines
+  rollout.py        Parallel rollouts, every episode graded by the verifier
+  evaluate.py       CLI
+tests/              Reward-hack tests (each test = one exploit)
+harbor_task/        Harbor-style task: instruction, Dockerfile, hidden-seed grader, reference solution
+k8s/job.yaml        Indexed Job for parallel rollouts
+Dockerfile          Reproducible runner
+```
 
-# 🚗 Self-Driving AI using CARLA Simulator
+## Quick start
+```bash
+pip install -e ".[dev]"
+pytest -q                                              # 18 tests, no simulator
+python -m rlnav.evaluate --policy heuristic            # pass_rate 1.0
+python -m rlnav.evaluate --policy random               # pass_rate 0.0
+ANTHROPIC_API_KEY=... python -m rlnav.evaluate --policy llm --episodes 5
+python -m rlnav.evaluate --backend carla --policy heuristic   # needs a CARLA server
+docker build -t rlnav . && docker run rlnav
+./scripts/sync_harbor.sh                               # prepare harbor_task build context
+kubectl apply -f k8s/job.yaml
+```
 
-This repository contains a deep reinforcement learning agent designed to learn autonomous driving behavior within the CARLA simulation environment. It uses a custom environment wrapper and a convolutional neural network to process grayscale camera input and output steering decisions.
+## Reward hacking: what I defended against
+My earlier project (RLAutoNav) rewarded speed, which an agent can farm by driving fast in circles.
+Here the reward and the grader are separate, and every verifier check maps to a concrete exploit:
 
-## 🧠 Project Overview
+| Exploit | Defence | Test |
+|---|---|---|
+| Drive fast/circle to farm speed reward | Reward is potential-based on distance-to-goal (loops sum to <= 0); no speed term | `test_circling_earns_no_reward`, `test_speed_alone_earns_no_reward` |
+| Circle forever | `goal_not_reached` | `test_circling_is_rejected` |
+| Loop, then finish | `excessive_turning`, `inefficient_path` | `test_loops_then_goal_rejected` |
+| Teleport to goal | Per-step displacement bound | `test_teleport_rejected` |
+| Speeding | `speed_limit` check | `test_speed_farming_rejected` |
+| Stand still | Must reach goal | `test_standing_still_rejected` |
+| Fabricated start / timestamps | `bad_start`, `bad_timestamps` | `test_fabricated_start_rejected`, `test_faked_timestamps_rejected` |
+| Hit things | `collision` check | `test_collision_rejected` |
 
-The project uses a **Discrete Deep Q-Network (DQN)** to train a car to drive autonomously by interpreting front-facing camera images and choosing from three discrete actions: **turn left**, **go straight**, or **turn right**.
+Harbor grading also runs the agent's policy inside the trusted env on **hidden seeds**, so the agent never
+supplies the trajectory it is judged on. Broken policy code or API failures degrade to braking instead of crashing the grader.
 
-The simulation environment is built on top of CARLA and integrates directly with a TensorFlow-based learning loop.
-
----
-
-## ⚙️ Files Included
-
-### `car_environment.py`
-
-* Wraps the CARLA simulator into a custom OpenAI Gym-like environment.
-* Includes:
-
-  * Collision sensor handling
-  * RGB camera with real-time image preprocessing
-  * Speed-based reward system
-  * Cleaned-up actor management
-* Images are converted to grayscale and downsampled for memory and speed efficiency.
-
-### `train_model.py`
-
-* Builds a CNN-based DQN agent using TensorFlow.
-* Uses experience replay and a target network to stabilize learning.
-* Includes:
-
-  * Dynamic reward shaping
-  * Early synchronization with the camera sensor
-  * Efficient replay memory updates
-  * Epsilon-greedy exploration
-* Synchronization with the environment is improved to ensure clean image collection and proper episode resets.
-
----
-
-## ✨ Improvements Made
-
-* Separated and cleaned camera preprocessing and sensor logic.
-* Reduced model input size to improve training speed.
-* Enhanced state synchronization between training and environment reset.
-* Modular reward system based on velocity and collisions.
-* Improved readability, modularity, and training stability.
-
----
-
-## 🧪 Getting Started
-
-1. **Install CARLA simulator** (tested on CARLA 0.9.13+).
-2. Clone this repo and ensure dependencies:
-
-   ```bash
-   pip install tensorflow numpy opencv-python
-   ```
-3. Run training:
-
-   ```bash
-   python train_model.py
-   ```
-
----
-
-## 📌 Requirements
-
-* Python 3.7+
-* CARLA Simulator
-* TensorFlow 2.x
-* NumPy, OpenCV
-
----
-
-## 🤝 Contribution
-
-Feel free to open issues or submit pull requests. Contributions to improve the training loop, reward functions, or agent behavior are welcome!
-
----
-
-Let me know if you'd like badges, images (e.g., from training), a license section, or a GitHub Actions CI badge.
+## Honest limitations
+- `backend_carla.py` follows the CARLA 0.9.13+ API but is not exercised by the tests (no server in CI).
+- Verifier thresholds (turn limit, path ratio) are tuned for this simple task and would need re-tuning in real towns with road networks.
+- The Harbor layout follows the commonly documented task format (`instruction.md`, `task.toml`, `environment/`, `tests/test.sh`, `solution/`); check it against the current Harbor docs.
+- Next steps: waypoint/route-based verification in CARLA, SFT/RLVR on the verifier signal, sandboxing the agent-written policy (gVisor/nsjail).
